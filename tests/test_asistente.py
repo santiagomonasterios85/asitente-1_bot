@@ -117,3 +117,175 @@ async def test_api_con_token_responde(monkeypatch):
         r = await post_chat({"mensaje": "¿Cuánto gasté en transporte?"}, "def")
     assert r.status_code == 200
     assert "67" in r.json()["texto"]
+
+
+
+
+
+
+
+def test_clima_bolivia_manana(monkeypatch):
+    """Comprueba el clima sin utilizar internet."""
+
+    class RespuestaFalsa:
+        def __init__(self, datos):
+            self.datos = datos
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.datos
+
+    def api_falsa(url, params, timeout):
+        if "geocoding-api" in url:
+            return RespuestaFalsa({
+                "results": [{
+                    "name": "La Paz",
+                    "admin1": "La Paz",
+                    "latitude": -16.5,
+                    "longitude": -68.15
+                }]
+            })
+
+        return RespuestaFalsa({
+            "current": {
+                "temperature_2m": 12,
+                "relative_humidity_2m": 60
+            },
+            "daily": {
+                "time": ["2026-11-02", "2026-11-03"],
+                "temperature_2m_max": [18, 20],
+                "temperature_2m_min": [5, 6],
+                "precipitation_probability_max": [20, 70],
+                "precipitation_sum": [0, 3]
+            }
+        })
+
+    monkeypatch.setattr(capacidades.httpx, "get", api_falsa)
+
+    resultado = capacidades.clima_bolivia("La Paz", "manana")
+
+    assert resultado["ciudad"] == "La Paz"
+    assert resultado["pronostico"]["fecha"] == "2026-11-03"
+    assert resultado["pronostico"]["maxima_c"] == 20
+    assert resultado["pronostico"]["probabilidad_lluvia_pct"] == 70
+
+
+# ═══ Pruebas del asesor tecnológico ═══════════════════
+
+def test_buscar_laptops_por_presupuesto():
+    resultado = capacidades.buscar_productos(
+        presupuesto_max=5500,
+        categoria="Laptop"
+    )
+
+    assert resultado["total_encontrados"] > 0
+
+    for producto in resultado["productos"]:
+        assert producto["precio_bs"] <= 5500
+        assert producto["categoria"] == "Laptop"
+        assert producto["stock"] > 0
+
+
+def test_detalle_producto():
+    producto = capacidades.detalle_producto("L001")
+
+    assert producto["codigo"] == "L001"
+    assert producto["marca"] == "Lenovo"
+    assert producto["precio_bs"] == 5200
+
+
+def test_comparar_productos():
+    resultado = capacidades.comparar_productos("L001", "L004")
+
+    assert resultado["producto_1"]["codigo"] == "L001"
+    assert resultado["producto_2"]["codigo"] == "L004"
+    assert resultado["diferencia_precio_bs"] == 1700
+
+
+# ═══ Pruebas del cotizador tecnológico ═══════════════════
+
+def test_cotizacion_con_descuento():
+    from capacidades import LineaCotizacion
+
+    resultado = capacidades.generar_cotizacion(
+        lineas=[
+            LineaCotizacion(codigo="L001", cantidad=2),
+            LineaCotizacion(codigo="A001", cantidad=3)
+        ],
+        descuento_pct=5
+    )
+
+    assert resultado["subtotal_bs"] == 10760
+    assert resultado["descuento_bs"] == 538
+    assert resultado["total_bs"] == 10222
+
+
+def test_cotizacion_stock_insuficiente():
+    from capacidades import LineaCotizacion
+
+    resultado = capacidades.generar_cotizacion(
+        lineas=[
+            LineaCotizacion(codigo="L005", cantidad=10)
+        ]
+    )
+
+    assert "error" in resultado
+    assert resultado["disponible"] == 2
+
+
+def test_cotizacion_producto_inexistente():
+    from capacidades import LineaCotizacion
+
+    resultado = capacidades.generar_cotizacion(
+        lineas=[
+            LineaCotizacion(codigo="NOEXISTE", cantidad=1)
+        ]
+    )
+
+    assert "error" in resultado
+
+
+async def test_telegram_envia_cotizacion_pdf(monkeypatch):
+    """Comprueba el envío de PDF sin llamar a Telegram."""
+
+    monkeypatch.setattr(
+        settings, "telegram_permitidos", "123"
+    )
+
+    documentos_enviados = []
+
+    async def reply_text(texto):
+        raise AssertionError(
+            f"No se esperaba un mensaje de error: {texto}"
+        )
+
+    async def reply_document(document, filename, caption):
+        documentos_enviados.append({
+            "contenido": document.read(),
+            "nombre": filename,
+            "caption": caption
+        })
+
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=123),
+        message=SimpleNamespace(
+            reply_text=reply_text,
+            reply_document=reply_document
+        )
+    )
+
+    context = SimpleNamespace(
+        args=["L001:2", "A001:3", "descuento:5"]
+    )
+
+    await bot.cotizar(update, context)
+
+    assert len(documentos_enviados) == 1
+
+    enviado = documentos_enviados[0]
+
+    assert enviado["contenido"].startswith(b"%PDF-")
+    assert enviado["nombre"] == "cotizacion.pdf"
+    assert "10,222.00 Bs" in enviado["caption"]

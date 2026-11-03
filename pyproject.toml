@@ -16,6 +16,7 @@ dependencies = [
     "pypdf>=6,<7",
     "fastapi>=0.162,<1",
     "uvicorn>=0.54,<1",
+    "reportlab>=5.1.0",
 ]
 
 [dependency-groups]

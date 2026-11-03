@@ -10,6 +10,9 @@ from datetime import date
 from functools import cache
 from typing import Literal
 
+from decimal import Decimal, ROUND_HALF_UP
+from pydantic import BaseModel, Field
+
 import chromadb
 import httpx
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -20,12 +23,24 @@ from pypdf import PdfReader
 from config import DATOS, settings
 
 # ═══ S1 · Tools de lectura con APIs públicas ══════════════════════════════════════════
-apis = Capability(
+'''apis = Capability(
     id="apis_publicas",
     description="Consulta indicadores económicos (Banco Mundial) y clima (Open Meteo) con sus APIs públicas",
     instructions="Usa las APIs para obtener datos reales. Si una API no tiene el dato, dilo, y no inventes datos",
-)
+)'''
 
+
+apis = Capability(
+    id="apis_publicas",
+    description="Consulta inflación del Banco Mundial y clima actual o pronósticos de ciudades de Bolivia mediante Open-Meteo",
+    instructions=(
+        "Usa las APIs para obtener datos reales y actualizados. "
+        "Para consultas del clima en Bolivia utiliza clima_bolivia. "
+        "Si preguntan por mañana usa periodo='manana'. "
+        "Si preguntan por los próximos 7 días usa periodo='semana'. "
+        "No inventes temperaturas ni pronósticos."
+    ),
+)
 
 @apis.tool_plain
 def inflacion(pais: str, anio: int) -> dict:
@@ -54,12 +69,109 @@ def inflacion(pais: str, anio: int) -> dict:
 
 
 @apis.tool_plain
+def clima_bolivia(
+    ciudad: str,
+    periodo: Literal["hoy", "manana", "semana"] = "hoy"
+) -> dict:
+    """Consulta el clima actual o pronóstico de una ciudad de Bolivia.
+
+    Args:
+        ciudad: Nombre de la ciudad boliviana, por ejemplo La Paz,
+                El Alto, Cochabamba, Santa Cruz, Sucre o Tarija.
+        periodo: hoy, manana (mañana) o semana (7 días).
+    """
+    try:
+        # 1. Buscar coordenadas de la ciudad
+        ubicacion = httpx.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={
+                "name": ciudad,
+                "count": 10,
+                "language": "es",
+                "countryCode": "BO"
+            },
+            timeout=15
+        )
+        ubicacion.raise_for_status()
+        resultados = ubicacion.json().get("results", [])
+
+        if not resultados:
+            return {"error": f"No encontré la localidad '{ciudad}' en Bolivia."}
+
+        lugar = resultados[0]
+
+        # 2. Consultar el pronóstico del tiempo
+        respuesta = httpx.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lugar["latitude"],
+                "longitude": lugar["longitude"],
+                "current": (
+                    "temperature_2m,relative_humidity_2m,"
+                    "apparent_temperature,wind_speed_10m"
+                ),
+                "daily": (
+                    "temperature_2m_max,temperature_2m_min,"
+                    "precipitation_probability_max,precipitation_sum"
+                ),
+                "timezone": "America/La_Paz",
+                "forecast_days": 7
+            },
+            timeout=15
+        )
+        respuesta.raise_for_status()
+        datos = respuesta.json()
+
+        info = {
+            "ciudad": lugar["name"],
+            "departamento": lugar.get("admin1", "No especificado"),
+            "pais": "Bolivia",
+            "fuente": "Open-Meteo",
+            "periodo": periodo
+        }
+
+        if periodo == "hoy":
+            info["actual"] = datos["current"]
+            indice = 0
+        elif periodo == "manana":
+            indice = 1
+        else:
+            indice = None
+
+        diario = datos["daily"]
+
+        def pronostico(i):
+            return {
+                "fecha": diario["time"][i],
+                "maxima_c": diario["temperature_2m_max"][i],
+                "minima_c": diario["temperature_2m_min"][i],
+                "probabilidad_lluvia_pct":
+                    diario["precipitation_probability_max"][i],
+                "precipitacion_mm": diario["precipitation_sum"][i]
+            }
+
+        if indice is not None:
+            info["pronostico"] = pronostico(indice)
+        else:
+            info["pronostico"] = [
+                pronostico(i) for i in range(len(diario["time"]))
+            ]
+
+        return info
+
+    except (httpx.HTTPError, ValueError, KeyError, IndexError) as error:
+        return {
+            "error": f"No pude consultar el clima de {ciudad}.",
+            "detalle": str(error)
+        }
+
+'''@apis.tool_plain
 def clima_cochabamba() -> dict:
     """Temperatura actual de Cochabamba, según Open Meteo."""
     params = {"latitude": -17.38, "longitude": -66.15, "current": "temperature_2m"}
     respuesta = httpx.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=10)
     respuesta.raise_for_status()
-    return {"temperatura": respuesta.json()["current"]["temperature_2m"], "fuente": "Open Meteo"}
+    return {"temperatura": respuesta.json()["current"]["temperature_2m"], "fuente": "Open Meteo"}'''
 
 
 # ═══ S1 · Mi contador: gastos en SQLite, una tool que lee y otra que escribe ══════════
@@ -192,3 +304,246 @@ def buscar_documentos(pregunta: str) -> list[dict]:
     for r in resultados:  # en la terminal (o en los Logs de Render) se ve qué recuperó
         print(f"  📄 {r['fuente']} (similitud {r['similitud']})", flush=True)
     return resultados
+
+
+
+
+
+
+
+# ═══ S3 · Asesor tecnológico y catálogo de productos ═══════════
+
+CATALOGO = DATOS / "catalogo.csv"
+
+tecnologia = Capability(
+    id="asesor_tecnologico",
+    description=(
+        "Consulta un catálogo de laptops y accesorios tecnológicos. "
+        "Recomienda productos por presupuesto, características y uso."
+    ),
+    instructions=(
+        "Utiliza las herramientas del catálogo para recomendar productos. "
+        "Los precios están expresados en bolivianos (Bs). "
+        "No inventes productos, precios, existencias ni características. "
+        "El catálogo contiene datos ficticios de demostración. "
+        "Para recomendaciones explica brevemente por qué cada equipo "
+        "es adecuado para el uso solicitado."
+    ),
+)
+
+
+def cargar_catalogo() -> list[dict]:
+    """Lee los productos del archivo CSV."""
+    with CATALOGO.open(encoding="utf-8-sig", newline="") as archivo:
+        productos = list(csv.DictReader(archivo))
+
+    for producto in productos:
+        producto["precio_bs"] = float(producto["precio_bs"])
+        producto["ram_gb"] = int(producto["ram_gb"])
+        producto["almacenamiento_gb"] = int(producto["almacenamiento_gb"])
+        producto["stock"] = int(producto["stock"])
+
+    return productos
+
+
+@tecnologia.tool_plain
+def buscar_productos(
+    presupuesto_max: float = 0,
+    categoria: str = "",
+    uso: str = ""
+) -> dict:
+    """Busca productos disponibles por presupuesto, categoría o uso.
+
+    Args:
+        presupuesto_max: Presupuesto máximo en bolivianos. 0 significa sin límite.
+        categoria: Laptop o Accesorio. Vacío significa todas.
+        uso: programacion, gaming, oficina, estudios, diseno,
+             almacenamiento o actualizacion. Vacío significa todos.
+    """
+    productos = cargar_catalogo()
+    resultados = []
+
+    for producto in productos:
+        if producto["stock"] <= 0:
+            continue
+
+        if presupuesto_max > 0 and producto["precio_bs"] > presupuesto_max:
+            continue
+
+        if categoria and producto["categoria"].lower() != categoria.lower():
+            continue
+
+        if uso and producto["uso"].lower() != uso.lower():
+            continue
+
+        resultados.append(producto)
+
+    resultados.sort(key=lambda p: p["precio_bs"])
+
+    return {
+        "total_encontrados": len(resultados),
+        "productos": resultados,
+        "fuente": "Catálogo ficticio de demostración"
+    }
+
+
+@tecnologia.tool_plain
+def detalle_producto(codigo: str) -> dict:
+    """Obtiene las características, precio y stock de un producto por código."""
+    for producto in cargar_catalogo():
+        if producto["codigo"].upper() == codigo.upper():
+            return producto
+
+    return {"error": f"No existe el producto con código {codigo}."}
+
+
+@tecnologia.tool_plain
+def comparar_productos(codigo1: str, codigo2: str) -> dict:
+    """Compara dos productos del catálogo utilizando sus códigos."""
+    productos = cargar_catalogo()
+
+    encontrados = {
+        p["codigo"].upper(): p
+        for p in productos
+    }
+
+    primero = encontrados.get(codigo1.upper())
+    segundo = encontrados.get(codigo2.upper())
+
+    if primero is None or segundo is None:
+        return {"error": "Uno o ambos productos no existen en el catálogo."}
+
+    return {
+        "producto_1": primero,
+        "producto_2": segundo,
+        "diferencia_precio_bs": round(
+            abs(primero["precio_bs"] - segundo["precio_bs"]), 2
+        ),
+        "fuente": "Catálogo ficticio de demostración"
+    }
+
+
+# ═══ Siguiente módulo · Cotizaciones tecnológicas ═══════════
+
+class LineaCotizacion(BaseModel):
+    """Un producto solicitado y su cantidad."""
+    codigo: str
+    cantidad: int = Field(gt=0)
+
+
+cotizaciones = Capability(
+    id="cotizaciones_tecnologicas",
+    description=(
+        "Genera cotizaciones de laptops y accesorios usando "
+        "los precios y existencias del catálogo."
+    ),
+    instructions=(
+        "Para cotizar productos utiliza generar_cotizacion. "
+        "Obtén los códigos de los productos del catálogo. "
+        "El descuento se expresa como porcentaje: 5 significa 5%. "
+        "No inventes precios ni realices cálculos por tu cuenta. "
+        "Si falta un producto o no hay stock, informa del problema. "
+        "Los precios son ficticios y se expresan en bolivianos. "
+        "No afirmes que se ha realizado una venta."
+    ),
+)
+
+
+def dinero(valor: Decimal) -> Decimal:
+    """Redondea cantidades monetarias a dos decimales."""
+    return valor.quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP
+    )
+
+
+@cotizaciones.tool_plain
+def generar_cotizacion(
+    lineas: list[LineaCotizacion],
+    descuento_pct: float = 0
+) -> dict:
+    """Cotiza productos del catálogo y comprueba existencias.
+
+    Args:
+        lineas: Lista de productos con código y cantidad.
+        descuento_pct: Descuento porcentual entre 0 y 100.
+                        Por ejemplo, 5 significa 5%.
+    """
+    descuento = Decimal(str(descuento_pct))
+
+    if not descuento.is_finite() or not 0 <= descuento <= 100:
+        return {"error": "El descuento debe estar entre 0 y 100%."}
+
+    if not lineas:
+        return {"error": "La cotización necesita productos."}
+
+    catalogo = {
+        p["codigo"].upper(): p
+        for p in cargar_catalogo()
+    }
+
+    # Agrupar códigos repetidos para comprobar stock total.
+    cantidades = {}
+
+    for linea in lineas:
+        codigo = linea.codigo.strip().upper()
+        if not codigo:
+            return {"error": "Hay un código de producto vacío."}
+
+        cantidades[codigo] = (
+            cantidades.get(codigo, 0) + linea.cantidad
+        )
+
+    # Validar todo antes de calcular.
+    for codigo, cantidad in cantidades.items():
+        producto = catalogo.get(codigo)
+
+        if producto is None:
+            return {"error": f"Producto {codigo} no encontrado."}
+
+        if cantidad > producto["stock"]:
+            return {
+                "error": f"Stock insuficiente para {codigo}.",
+                "solicitado": cantidad,
+                "disponible": producto["stock"]
+            }
+
+    detalle = []
+    subtotal = Decimal("0")
+
+    for codigo, cantidad in cantidades.items():
+        producto = catalogo[codigo]
+        precio = dinero(Decimal(str(producto["precio_bs"])))
+        importe = dinero(precio * cantidad)
+        subtotal += importe
+
+        detalle.append({
+            "codigo": codigo,
+            "producto": (
+                f"{producto['marca']} {producto['modelo']}"
+            ),
+            "cantidad": cantidad,
+            "precio_unitario_bs": float(precio),
+            "subtotal_bs": float(importe)
+        })
+
+    subtotal = dinero(subtotal)
+    descuento_bs = dinero(
+        subtotal * descuento / Decimal("100")
+    )
+    total = dinero(subtotal - descuento_bs)
+
+    return {
+        "estado": "cotizacion_generada",
+        "productos": detalle,
+        "subtotal_bs": float(subtotal),
+        "descuento_pct": float(descuento),
+        "descuento_bs": float(descuento_bs),
+        "total_bs": float(total),
+        "moneda": "BOB",
+        "fuente": "Catálogo ficticio de demostración",
+        "nota": (
+            "Cotización informativa. "
+            "No reserva productos ni modifica el stock."
+        )
+    }

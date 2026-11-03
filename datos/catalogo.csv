@@ -1,0 +1,11 @@
+codigo,categoria,marca,modelo,procesador,ram_gb,almacenamiento_gb,gpu,precio_bs,stock,uso
+L001,Laptop,Lenovo,IdeaPad Slim 3,Intel Core i5,16,512,Integrada,5200,5,programacion
+L002,Laptop,HP,Victus 15,AMD Ryzen 5,16,512,RTX 3050,7800,3,gaming
+L003,Laptop,ASUS,Vivobook 15,Intel Core i3,8,256,Integrada,3600,8,oficina
+L004,Laptop,Dell,Inspiron 15,Intel Core i7,16,512,Integrada,6900,4,programacion
+L005,Laptop,Lenovo,Legion 5,AMD Ryzen 7,32,1000,RTX 4060,12500,2,diseno
+L006,Laptop,Acer,Aspire 5,Intel Core i5,16,512,Integrada,4900,6,estudios
+A001,Accesorio,Logitech,M185,No aplica,0,0,No aplica,120,15,oficina
+A002,Accesorio,Kingston,SSD NV2,No aplica,0,1000,No aplica,650,10,almacenamiento
+A003,Accesorio,Kingston,RAM DDR4 16GB,No aplica,16,0,No aplica,380,12,actualizacion
+A004,Accesorio,Logitech,Teclado K120,No aplica,0,0,No aplica,100,20,oficina
