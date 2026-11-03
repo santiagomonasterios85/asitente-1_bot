@@ -15,7 +15,7 @@ import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from asistente import responder
+from asistente import responder, analizar_imagen
 from config import settings
 
 TOKEN = settings.telegram_token.get_secret_value()
@@ -119,6 +119,84 @@ async def cotizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+# ═══ Recepción de fotografías de Telegram ═══════════
+
+async def recibir_foto(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Recibe una fotografía y la analiza con Gemini."""
+
+    chat = str(update.effective_chat.id)
+
+    # Rechazar usuarios no autorizados antes de usar Gemini
+    if chat not in settings.permitidos:
+        await update.message.reply_text(
+            f"No autorizado. Tu chat es {chat}."
+        )
+        return
+
+    if not update.message.photo:
+        await update.message.reply_text(
+            "No recibí una fotografía válida."
+        )
+        return
+
+    try:
+        # Telegram entrega varios tamaños de la misma foto.
+        foto = update.message.photo[-1]
+
+        # Evitar procesar imágenes demasiado grandes.
+        if foto.file_size and foto.file_size > 5_000_000:
+            await update.message.reply_text(
+                "La fotografía supera el límite de 5 MB."
+            )
+            return
+
+        archivo = await foto.get_file()
+
+        imagen = bytes(
+            await archivo.download_as_bytearray()
+        )
+
+        if len(imagen) > 5_000_000:
+            await update.message.reply_text(
+                "La fotografía supera el límite de 5 MB."
+            )
+            return
+
+        # Comprobación básica del formato JPEG.
+        if not imagen.startswith(b"\xff\xd8\xff"):
+            await update.message.reply_text(
+                "No pude reconocer la fotografía como JPEG."
+            )
+            return
+
+        pregunta = (
+            update.message.caption or
+            "Analiza esta fotografía y describe lo más importante."
+        )
+
+        respuesta = await analizar_imagen(
+            contenido=imagen,
+            pregunta=pregunta
+        )
+
+        await update.message.reply_text(
+            respuesta[:4000]
+        )
+
+    except Exception as error:
+        print(
+            "Error al analizar fotografía:",
+            repr(error),
+            flush=True
+        )
+        await update.message.reply_text(
+            "No pude analizar la fotografía. "
+            "Revisa los registros del bot."
+        )
+
 
 async def mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = str(update.effective_chat.id)
@@ -140,6 +218,7 @@ def main() -> None:
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", inicio))
     app.add_handler(CommandHandler("cotizar", cotizar))
+    app.add_handler(MessageHandler(filters.PHOTO, recibir_foto))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje))
 
     permitidos = sorted(settings.permitidos) or "nadie"

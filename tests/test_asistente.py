@@ -289,3 +289,66 @@ async def test_telegram_envia_cotizacion_pdf(monkeypatch):
     assert enviado["contenido"].startswith(b"%PDF-")
     assert enviado["nombre"] == "cotizacion.pdf"
     assert "10,222.00 Bs" in enviado["caption"]
+
+
+
+# ═══ Pruebas del análisis de imágenes ═══════════════
+
+async def test_analizar_imagen_con_modelo_falso():
+    """Comprueba el agente visual sin utilizar Gemini."""
+
+    from pydantic_ai import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    def respuesta_falsa(mensajes, info):
+        return ModelResponse(
+            parts=[TextPart(
+                "Es una laptop para programación."
+            )]
+        )
+
+    modelo_falso = FunctionModel(respuesta_falsa)
+
+    with asistente.analista_visual.override(
+        model=modelo_falso
+    ):
+        respuesta = await asistente.analizar_imagen(
+            contenido=b"\xff\xd8\xffimagen-de-prueba",
+            pregunta="¿Qué observas?"
+        )
+
+    assert "laptop" in respuesta.lower()
+
+
+async def test_foto_usuario_no_autorizado(monkeypatch):
+    """Un usuario ajeno no puede consumir Gemini."""
+
+    monkeypatch.setattr(
+        settings, "telegram_permitidos", "123"
+    )
+
+    respuestas = []
+
+    async def reply_text(texto):
+        respuestas.append(texto)
+
+    async def modelo_prohibido(*args, **kwargs):
+        raise AssertionError(
+            "No se debería llamar al análisis visual."
+        )
+
+    monkeypatch.setattr(
+        bot, "analizar_imagen", modelo_prohibido
+    )
+
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=999),
+        message=SimpleNamespace(
+            photo=[],
+            reply_text=reply_text
+        )
+    )
+
+    await bot.recibir_foto(update, None)
+
+    assert "No autorizado" in respuestas[0]
