@@ -5,16 +5,12 @@ En Render, el mismo archivo usa un webhook (Telegram avisa a tu URL cuando llega
 se da cuenta solo porque Render define RENDER_EXTERNAL_URL.
 """
 from io import BytesIO
-
 from capacidades import LineaCotizacion, generar_cotizacion
 from cotizador_pdf import generar_pdf
-
 import hashlib
 import os
-
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-
 from asistente import responder, analizar_imagen
 from config import settings
 
@@ -119,6 +115,62 @@ async def cotizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+# ═══ Menú de ayuda del asistente ═══════════════
+
+async def ayuda(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Muestra las funcionalidades del chatbot."""
+
+    chat = str(update.effective_chat.id)
+
+    if chat not in settings.permitidos:
+        await update.message.reply_text(
+            f"No autorizado. Tu chat es {chat}."
+        )
+        return
+
+    texto = (
+        "🤖 Nan_Bot 1.0 - ASISTENTE MULTIFUNCIONAL\n\n"
+        "Estas son mis funcionalidades:\n\n"
+
+        "🌤 1. CLIMA DE BOLIVIA\n"
+        "¿Lloverá mañana en La Paz?\n\n"
+
+        "💰 2. FINANZAS PERSONALES\n"
+        "¿Cuánto gasté en transporte?\n"
+        "Registra 20 Bs en alimentación hoy.\n\n"
+
+        "📄 3. DOCUMENTOS INTELIGENTES\n"
+        "¿Cuándo vence mi contrato de internet?\n\n"
+
+        "📊 4. ECONOMÍA\n"
+        "¿Cuál fue la inflación de Bolivia en 2024?\n\n"
+
+        "💻 5. ASESOR TECNOLÓGICO\n"
+        "Recomiéndame una laptop para programar "
+        "con 5500 Bs.\n"
+        "Compara L001 con L004.\n\n"
+
+        "🧾 6. COTIZACIONES\n"
+        "Cotiza 2 laptops L001 y 3 mouse A001 "
+        "con 5% de descuento.\n\n"
+
+        "📥 7. GENERACIÓN DE PDF\n"
+        "/cotizar L001:2 A001:3 descuento:5\n\n"
+
+        "📷 8. RECONOCIMIENTO DE IMÁGENES\n"
+        "Envíame una fotografía de una laptop, "
+        "componente o recibo, con una pregunta.\n\n"
+
+        "Las cotizaciones y productos son "
+        "datos ficticios de demostración.\n\n"
+        "¡Escríbeme una pregunta para comenzar!"
+    )
+
+    await update.message.reply_text(texto)
+
 # ═══ Recepción de fotografías de Telegram ═══════════
 
 async def recibir_foto(
@@ -217,6 +269,7 @@ def main() -> None:
         raise SystemExit("Falta TELEGRAM_TOKEN: créalo con @BotFather y ponlo en .env (o en Environment, en Render).")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", inicio))
+    app.add_handler(CommandHandler("ayuda", ayuda))
     app.add_handler(CommandHandler("cotizar", cotizar))
     app.add_handler(MessageHandler(filters.PHOTO, recibir_foto))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje))
